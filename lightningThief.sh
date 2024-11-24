@@ -496,16 +496,41 @@ enumerateSite()
 exploreSite()
 
 {
-    for key in "${!site_map_dict[@]}"; do
-        
-        output=$(curl -s "$targetIP:$key" | sed -n 's/.*href="\(\(\/[^"]*\)\).*/\1/p')
-        site_map_dict[$key]="${site_map_dict[$key]} /" # add base URL
-        for url in ${site_map_dict[$key]}; do
-            echo "URL $url"
-            curl -s "$targetIP:$key$url" | sed -n 's/.*href="\(\(\/[^"]*\)\).*/\1/p'
+
+    for key in "${!site_map_dict[@]}"; do # Loops throught each http port's site pages
+        pages=(${site_map_dict[$key]})
+        i=0
+        while [[ $i -lt ${#pages[@]} ]]; do # Crawls all avaliable pages
+            page="${pages[$i]}"
+            #echo $page
+            output=$(curl -s "$targetIP:$key$page")
+            hrefs=($(echo "$output" | sed -n 's/.*href="\(\(\/[^"]*\)\).*/\1/p'))
+
+            # add support for scripts later
+
+            for new_page in "${hrefs[@]}"; do
+                
+                top_level="/$(echo "$new_page" | cut -d'/' -f2)"
+                #echo "Top: $top_level"
+                #echo "Checking list for $new_page"
+                if [[ ! " ${pages[@]} " =~ " $new_page " ]]; then
+                #echo "Adding: $new_page"
+                pages+=("$new_page")
+                fi
+
+                if [[ ! " ${pages[@]} " =~ " $new_page " ]]; then
+                pages+=("$top_level")
+                fi
+            done
+            ((i++))
         done
-        #echo "${site_map_dict[$key]}"
+        site_map_dict[$key]="${pages[@]}"
+
+        echo "siteMap"
+        printf "%s\n" "${site_map_dict[$key]}"
+
     done
+
 }
 
 echo " "
