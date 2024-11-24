@@ -513,12 +513,12 @@ exploreSite()
                 top_level="/$(echo "$new_page" | cut -d'/' -f2)"
                 #echo "Top: $top_level"
                 #echo "Checking list for $new_page"
-                if [[ ! " ${pages[@]} " =~ " $new_page " ]]; then
-                #echo "Adding: $new_page"
-                pages+=("$new_page")
+                if [[ ! " ${pages[@]} " =~ " $new_page " && ! "$new_page" =~ \.css$ ]]; then
+                    #echo "Adding: $new_page"
+                    pages+=("$new_page")
                 fi
 
-                if [[ ! " ${pages[@]} " =~ " $new_page " ]]; then
+                if [[ ! " ${pages[@]} " =~ " $top_level " ]]; then
                 pages+=("$top_level")
                 fi
             done
