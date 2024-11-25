@@ -19,9 +19,9 @@ menu() {
     echo "Pen Test Stages"
     echo " "
     echo "[0] Change Settings"
-    echo "[1] Full Pen Test"
-    echo "[2] Intelligence Gathering (Local)"
-    echo "[3] Network Scanning (Local)" 
+    echo "[1] Domain Intelligence (Local)"
+    echo "[2] Network Scanning (Local)" 
+    echo "[3] Site Scanning (Local)"
     echo "[4] Idenitfy Vulnerabilities (Local)"
     echo "[5] Exploit Vulnerabilities (Local)"
     echo "[6] Maintain Access (Local/Target)" 
@@ -196,26 +196,21 @@ stage0() {
     settings
 }
 
-stage1() { # Full Pen Test
-    stage2
-    stage3
-    stage4
-    stage5
-    stage6
-    stage7
-    stage8
-    stage9
-}
-
-stage2() { # Intelligence Gathering
+stage1() { # Intelligence Gathering
     echo "hello"
 }
 
-stage3() { # Network Scanning
+stage2() { # Network Scanning
     nmapOpen
+    nmapVersions
 }
 
-stage4() { # Idenitfy Vulnerabilities
+stage3() { # Site Scanning
+    enumerateSite
+    exploreSite
+}
+
+stage4() {
     echo "hello"
 }
 
@@ -232,10 +227,6 @@ stage7() {
 }
 
 stage8() {
-    echo "hello"
-}
-
-stage9() {
     echo "hello"
 }
 
@@ -300,7 +291,6 @@ nmapOpen() {
 
     # Extract open ports and build a comma-separated list
     ports=$(echo "$output" | awk '/^[0-9]+\/[a-z]+/ {print $1}' | cut -d'/' -f1 | tr '\n' ',' | sed 's/,$//')
-    nmapVersions
 }
 
 nmapVersions() {
@@ -362,7 +352,18 @@ nmapVersions() {
         echo "Open Ports: $portCount"
         echo "Identified Ports: $idCount"
         echo "$percentage%" 
-        enumerateSite
+        echo " "
+        echo "Getting HTTP Services..."
+        echo " "
+        # Print the header
+        printf "%-10s | %-15s | %-50s\n" "Port" "Service" "Version"
+        printf "%-10s-+-%-15s-+-%-50s\n" "----------" "---------------" "--------------------------------------------------"
+
+        for key in $(printf "%s\n" "${!http_service_dict[@]}" | sort -n); do
+            printf "%-10s | %-15s | %-50s\n" "$key" "${port_service_dict[$key]}" "${port_version_dict[$key]}"
+        done
+        
+        echo " "
     fi
         
 }
@@ -397,25 +398,27 @@ getPortList() {
 
 enumerateSite()
 {
-    echo " "
-    echo "Getting HTTP Services..."
-    echo " "
-    # Print the header
-    printf "%-10s | %-15s | %-50s\n" "Port" "Service" "Version"
-    printf "%-10s-+-%-15s-+-%-50s\n" "----------" "---------------" "--------------------------------------------------"
-
-    for key in $(printf "%s\n" "${!http_service_dict[@]}" | sort -n); do
-        printf "%-10s | %-15s | %-50s\n" "$key" "${port_service_dict[$key]}" "${port_version_dict[$key]}"
-    done
-    
-    echo " "
+    cleanHTTP=()
+    if [[ ${#http_service_dict[@]} -eq 0 ]]; then # if the user skipped stage 2 treat all ports as valid
+        if [[ "$httpPorts" == "LATER" || "$httpPorts" == "ALL" ]]; then
+            echo "No Network Scan detected (stage 2)"
+            echo " "
+            read -p "Select HTTP/S Port(s): " httpPorts
+            echo " "
+        fi
+        getPortList "$httpPorts" cleanHTTP
+        for key in "${cleanHTTP[@]}"; do
+            http_service_dict["$key"]="http"
+        done
+    fi
 
     if [[ "$httpPorts" == "ALL" ]]; then
         for key in $(printf "%s\n" "${!http_service_dict[@]}" | sort -n); do
+            paths=()
             output=$(gobuster -u "http://$targetIP:$key" -w "$discoveryPath")
             paths="/"
             paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
-            if [[ ${#paths[@]} -gt 0 ]]; then
+            if [[ ${#paths[@]} -gt 1 ]]; then
                 echo " "
                 echo "Fuzzing Site: $targetIP:$key"
                 echo " "
@@ -429,7 +432,6 @@ enumerateSite()
             fi
         done
     else
-        cleanHTTP=()
         while true; do
             # Prompt user for HTTP/S ports
             if [[ "$httpPorts" == "LATER" ]]; then
@@ -452,17 +454,19 @@ enumerateSite()
 
             # Check if there are any valid ports to proceed
             if [[ ${#valid_ports[@]} -gt 0 ]]; then
-                echo "Valid HTTP ports selected: ${valid_ports[*]}"
+                echo "HTTP ports selected: ${valid_ports[*]}"
                 echo " "
                 httpPorts=$(IFS=,; echo "${valid_ports[*]}")  # Rebuild as a comma-separated string
                 setEnv "HTTP_PORTS" "$httpPorts"
 
                 # Perform gobuster for each valid port
                 for port in "${valid_ports[@]}"; do
+                    paths=() # clear paths
+                    #echo "Port: $port"
                     output=$(gobuster -u "http://$targetIP:$port" -w "$discoveryPath")
                     paths="/"
-                    paths+=($(echo "$output" | awk '/\(Status: 200\)/ {gsub(/\(Status: 200\)/, "", $1); print $1}'))
-                    if [[ ${#paths[@]} -gt 0 ]]; then
+                    paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
+                    if [[ ${#paths[@]} -gt 1 ]]; then
                         echo " "
                         echo "Fuzzing Site: $targetIP:$port"
                         echo " "
@@ -471,7 +475,7 @@ enumerateSite()
                         site_map_dict[$port]="${paths[@]}"
                     else
                         echo " "
-                        echo "No paths accessible on port $key"
+                        echo "No paths accessible on port $targetIP:$port"
                         echo " "
                     fi
                 done
@@ -488,8 +492,6 @@ enumerateSite()
             fi
         done
     fi
-
-    exploreSite
     
 }
 
@@ -534,6 +536,7 @@ exploreSite()
         for site_pages in ${site_map_dict[$key]}; do
             printf "%s\n" "$site_pages"
         done
+        echo " "
     done
 
 }
