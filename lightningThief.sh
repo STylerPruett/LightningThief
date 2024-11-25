@@ -412,19 +412,19 @@ enumerateSite()
 
     if [[ "$httpPorts" == "ALL" ]]; then
         for key in $(printf "%s\n" "${!http_service_dict[@]}" | sort -n); do
-            echo "Fuzzing for Site Pages on port: $key"
-            echo " "
             output=$(gobuster -u "http://$targetIP:$key" -w "$discoveryPath")
-            paths=($(echo "$output" | awk '/\(Status: 200\)/ {gsub(/\(Status: 200\)/, "", $1); print $1}'))
+            paths="/"
+            paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
             if [[ ${#paths[@]} -gt 0 ]]; then
                 echo " "
-                echo "Accessible Paths Discovered:"
+                echo "Fuzzing Site: $targetIP:$key"
+                echo " "
                 printf "%s\n" "${paths[@]}"
                 echo " "
                 site_map_dict[$key]="${paths[@]}"
             else
                 echo " "
-                echo "No paths accessible on port $key"
+                echo "No paths accessible on $targetIP:$key"
                 echo " "
             fi
         done
@@ -452,20 +452,20 @@ enumerateSite()
 
             # Check if there are any valid ports to proceed
             if [[ ${#valid_ports[@]} -gt 0 ]]; then
-                echo "Valid HTTP ports: ${valid_ports[*]}"
+                echo "Valid HTTP ports selected: ${valid_ports[*]}"
                 echo " "
                 httpPorts=$(IFS=,; echo "${valid_ports[*]}")  # Rebuild as a comma-separated string
                 setEnv "HTTP_PORTS" "$httpPorts"
 
                 # Perform gobuster for each valid port
                 for port in "${valid_ports[@]}"; do
-                    echo "Fuzzing for Site Pages on port: ${valid_ports[*]}"
-                    echo " "
                     output=$(gobuster -u "http://$targetIP:$port" -w "$discoveryPath")
-                    paths=($(echo "$output" | awk '/\(Status: 200\)/ {gsub(/\(Status: 200\)/, "", $1); print $1}'))
+                    paths="/"
+                    paths+=($(echo "$output" | awk '/\(Status: 200\)/ {gsub(/\(Status: 200\)/, "", $1); print $1}'))
                     if [[ ${#paths[@]} -gt 0 ]]; then
                         echo " "
-                        echo "Accessible Paths Discovered:"
+                        echo "Fuzzing Site: $targetIP:$port"
+                        echo " "
                         printf "%s\n" "${paths[@]}"
                         echo " "
                         site_map_dict[$port]="${paths[@]}"
@@ -498,6 +498,8 @@ exploreSite()
 {
 
     for key in "${!site_map_dict[@]}"; do # Loops throught each http port's site pages
+        echo "Web Crawling Site: $targetIP:$key"
+        echo " "
         pages=(${site_map_dict[$key]})
         i=0
         while [[ $i -lt ${#pages[@]} ]]; do # Crawls all avaliable pages
@@ -514,21 +516,24 @@ exploreSite()
                 #echo "Top: $top_level"
                 #echo "Checking list for $new_page"
                 if [[ ! " ${pages[@]} " =~ " $new_page " && ! "$new_page" =~ \.css$ ]]; then
-                    #echo "Adding: $new_page"
+                    echo "$new_page"
                     pages+=("$new_page")
                 fi
 
                 if [[ ! " ${pages[@]} " =~ " $top_level " ]]; then
-                pages+=("$top_level")
+                    echo $top_level
+                    pages+=("$top_level")
                 fi
             done
             ((i++))
         done
         site_map_dict[$key]="${pages[@]}"
-
-        echo "siteMap"
-        printf "%s\n" "${site_map_dict[$key]}"
-
+        echo " "
+        echo "Site Map: $targetIP:$key"
+        echo " "
+        for site_pages in ${site_map_dict[$key]}; do
+            printf "%s\n" "$site_pages"
+        done
     done
 
 }
