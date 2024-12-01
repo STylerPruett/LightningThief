@@ -410,6 +410,7 @@ enumerateSite()
     fi
 
     getPortList "$httpPorts" cleanHTTP
+    echo "Starting Site Fuzzing.."
 
    if [[ "$httpPorts" == "ALL" ]]; then
         for key in "${cleanHTTP[@]}"; do
@@ -471,25 +472,31 @@ exploreSite()
         i=0
         while [[ $i -lt ${#pages[@]} ]]; do # Crawls all avaliable pages
             page="${pages[$i]}"
-            #echo $page
-            output=$(curl -s "$targetIP:$key$page")
+            #echo "Checking Page: $page"
+            output=$(curl -s -L "$targetIP:$key$page")
             hrefs=($(echo "$output" | sed -n 's/.*href="\([^"]*\)".*/\1/p'))
-
             # add support for scripts later
 
             for new_page in "${hrefs[@]}"; do
-                
                 top_level="/$(echo "$new_page" | cut -d'/' -f2)"
+                if [[ "$new_page" != /* && "$new_page" != .* && "new_page" != ?* && "$new_page" != "#" ]]; then
+                    #echo "before: $new_page"
+                    new_page="$page/$new_page"
+                    #echo "after: $new_page"
+                elif [[ "$new_page" == .* || "$new_page" == "#" ]]; then
+                    continue
+                fi
                 #echo "Top: $top_level"
                 #echo "Checking list for $new_page"
-                if [[ ! " ${pages[@]} " =~ " $new_page " && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ ]]; then
+                #echo "Test Page: $new_page"
+                if [[ ! " ${pages[@]} " =~ " $new_page " && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ && ! "$new_page" =~ \.png$ ]]; then
                     echo "$new_page"
                     pages+=("$new_page")
                 fi
-
-                if [[ ! " ${pages[@]} " =~ " $top_level " ]]; then
+                #echo "Test Top Page: $top_level"
+                if [[ ! " ${pages[@]} " =~ "${top_level}" && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ && ! "$new_page" =~ \.png$ ]]; then
                     echo $top_level
-                    pages+=("$top_level")
+                    pages+=("${top_level}")
                 fi
             done
             ((i++))
@@ -509,6 +516,7 @@ exploreSite()
 }
 
 webAttack() {
+
     if [[ ${#site_map_dict[@]} -eq 0 ]]; then # if user skipped stage 3
         cleanHTTP=()
         getPortList "$httpPorts" cleanHTTP
@@ -520,6 +528,9 @@ webAttack() {
         done
         exploreSite
     fi
+
+    echo "Searching Site for Vulnerabilities..."
+    echo " "
     
     for port in "${!site_map_dict[@]}"; do
         # File Traversal
@@ -527,10 +538,16 @@ webAttack() {
             response=$(curl -s "$targetIP:$port$url")
             if [[ -n "$response" ]]; then
                 searchFlag=$(echo "$response" | grep -oE '{[^}]*\}')
+                siteForms=$(echo "$response" | sed -n '/<form/,/<\/form>/p')
                 if [[ -n "$searchFlag" ]]; then
                     echo "Potential Flag Found: $url - $searchFlag"
                 fi
-                if [[ "$url" == *"="* ]]; then
+                if [[ -n "$siteForms" ]]; then 
+                    echo "Form Found: $url - $postMe"
+                fi
+                
+                if [[ "$url" == *"="* && $rce_boolean != "True" ]]; then
+                    echo "Trying RCE Injection on $url"
                     # RCE Injections
                     rce_output=$(rce "$targetIP:$port$url")
                     rce_boolean=$(echo "$rce_output" | awk '{print $1}')
@@ -541,7 +558,6 @@ webAttack() {
                         # TODO: Store payload for later exploiting
                         echo "Payload: $payload"
                     fi
-                    break
                 fi
             fi
         done
